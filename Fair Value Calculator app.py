@@ -20,7 +20,7 @@ SECTOR_ETFS = {
 # Incarcare API Key din Streamlit Secrets
 try:
     api_key = st.secrets["FMP_API_KEY"].strip()
-except Exception as e:
+except Exception:
     api_key = None
 
 # --- SIDEBAR PENTRU INPUT-URI ---
@@ -29,13 +29,14 @@ ticker_symbol = st.sidebar.text_input("Introdu Ticker-ul (ex: AAPL, MSFT)", valu
 
 if ticker_symbol:
     try:
-        # Preluare date de baza
+        # Diagnosticare pas cu pas
         ticker = yf.Ticker(ticker_symbol)
+        
+        # Incercam sa luam info - aici crapa de obicei daca e block
         info = ticker.info
         
-        # Daca info e gol, inseamna ca Yahoo Finance ne-a blocat
         if not info or len(info) < 5:
-            st.error("⚠️ Yahoo Finance refuză conexiunea temporar. Încearcă peste câteva minute.")
+            st.error("⚠️ Yahoo Finance refuză conexiunea (Rate Limit). Serverul Streamlit este blocat temporar.")
             st.stop()
 
         current_price = info.get('currentPrice', info.get('regularMarketPrice', 0))
@@ -50,7 +51,7 @@ if ticker_symbol:
         if api_key:
             try:
                 url = f"https://financialmodelingprep.com/api/v3/analyst-estimates/{ticker_symbol}?limit=2&apikey={api_key}"
-                response = requests.get(url)
+                response = requests.get(url, timeout=5)
                 if response.status_code == 200:
                     data = response.json()
                     if len(data) > 0:
@@ -68,9 +69,12 @@ if ticker_symbol:
 
         # 1. Calcul WACC automat
         try:
-            tnx = yf.Ticker("^TNX").info.get('regularMarketPrice', 4.0) / 100
+            tnx_ticker = yf.Ticker("^TNX")
+            tnx_price = tnx_ticker.info.get('regularMarketPrice', 4.0)
+            tnx = tnx_price / 100
         except:
             tnx = 0.04
+            
         market_return = 0.10 
         cost_of_equity = tnx + beta * (market_return - tnx)
         wacc = st.sidebar.number_input("WACC (%)", value=float(round(cost_of_equity * 100, 2)), step=0.1) / 100
@@ -83,13 +87,14 @@ if ticker_symbol:
         fetched_pe = 15.0
         if company_sector in SECTOR_ETFS:
             try:
-                etf_info = yf.Ticker(SECTOR_ETFS[company_sector]).info
-                fetched_pe = etf_info.get('trailingPE', 15.0)
+                etf_ticker = yf.Ticker(SECTOR_ETFS[company_sector])
+                fetched_pe = etf_ticker.info.get('trailingPE', 15.0)
             except: pass
         sector_pe = st.sidebar.number_input("P/E Mediu Sector", value=float(fetched_pe), step=0.5)
 
         # PEG
         est_growth = (info.get('earningsGrowth', 0.1) * 100)
+        if est_growth is None: est_growth = 10.0
         forward_growth = st.sidebar.number_input("Creștere estimată (%)", value=float(est_growth), step=1.0)
 
         # --- REZULTATE ---
@@ -98,24 +103,23 @@ if ticker_symbol:
         
         col1, col2 = st.columns(2)
         
-        # 1. DCF
+        # 1. DCF Simplificat pentru stabilitate
         with col1:
             st.subheader("1. DCF")
             try:
                 cf = ticker.cashflow
                 fcf = cf.loc['Free Cash Flow'].iloc[0] if 'Free Cash Flow' in cf.index else 0
-                fcf_share = fcf / info.get('sharesOutstanding', 1)
-                dcf_val = (fcf_share * (1 + forward_growth/100)) / (wacc - terminal_growth/100)
+                shares = info.get('sharesOutstanding', 1)
+                fcf_share = fcf / shares if shares else 0
+                dcf_val = (fcf_share * (1 + forward_growth/100)) / (wacc - terminal_growth/100) if (wacc - terminal_growth/100) != 0 else 0
                 st.metric("Fair Value (DCF)", f"{max(0, dcf_val):.2f} USD")
             except:
-                st.write("Date DCF indisponibile.")
-                dcf_val = 0
+                st.write("Date DCF insuficiente.")
 
         # 2. Lynch
         with col2:
             st.subheader("2. Peter Lynch")
-            growth = forward_growth # simplificat pentru diagnostic
-            lynch_val = eps_ttm * growth
+            lynch_val = eps_ttm * forward_growth
             st.metric("Fair Value (Lynch)", f"{max(0, lynch_val):.2f} USD")
 
         col3, col4 = st.columns(2)
@@ -132,5 +136,5 @@ if ticker_symbol:
 
     except Exception as e:
         st.error(f"❌ Eroare tehnică detectată: {e}")
-        with st.expander("Vezi detalii pentru depanare"):
+        with st.expander("Vezi detalii pentru depanare (Traceback)"):
             st.code(traceback.format_exc())
