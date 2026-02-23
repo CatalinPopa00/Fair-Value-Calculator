@@ -19,7 +19,8 @@ if ticker_symbol:
         
         # Preluare date factuale necesare
         current_price = info.get('currentPrice', info.get('regularMarketPrice', 0))
-        eps = info.get('trailingEps', 0)
+        # Acesta este EPS-ul curent (FY / Trailing 12 Months)
+        eps_ttm = info.get('trailingEps', 0) 
         beta = info.get('beta', 1.0)
         
         # 1. Calcul WACC automat
@@ -50,9 +51,9 @@ if ticker_symbol:
 
         # --- CALCUL METODE ---
         st.header(f"Rezultate pentru {info.get('shortName', ticker_symbol)} ({ticker_symbol})")
-        st.write(f"**Preț Curent:** {current_price} USD | **EPS (TTM):** {eps} USD")
+        st.write(f"**Preț Curent:** {current_price} USD | **EPS (TTM / FY):** {eps_ttm} USD")
         
-        # --- RÂNDUL 1 (Forțat pentru mobil: 1 și 2) ---
+        # --- RÂNDUL 1 (Garantează ordinea 1 și 2) ---
         r1_col1, r1_col2 = st.columns(2)
         
         # 1. DISCOUNTED CASH FLOW (DCF)
@@ -61,10 +62,10 @@ if ticker_symbol:
             try:
                 cashflow = ticker.cashflow
                 if 'Free Cash Flow' in cashflow.index:
-                    fcf_current = cashflow.loc['Free Cash Flow'].iloc[0]
+                    fcf_current = cashflow.loc['Free Cash Flow'].dropna().iloc[0]
                 else:
-                    ocf = cashflow.loc['Operating Cash Flow'].iloc[0]
-                    capex = cashflow.loc['Capital Expenditure'].iloc[0]
+                    ocf = cashflow.loc['Operating Cash Flow'].dropna().iloc[0]
+                    capex = cashflow.loc['Capital Expenditure'].dropna().iloc[0]
                     fcf_current = ocf + capex 
                 
                 shares_out = info.get('sharesOutstanding', 1)
@@ -87,60 +88,74 @@ if ticker_symbol:
         with r1_col2:
             st.subheader("2. Metoda Peter Lynch")
             try:
+                # Căutăm sigur rândul EPS și curățăm datele Nule cu .dropna()
                 if lynch_period == "Anual (FY Y/Y)":
                     stmt = ticker.income_stmt
-                    eps_row = 'Diluted EPS' if 'Diluted EPS' in stmt.index else 'Basic EPS'
-                    eps_now = stmt.loc[eps_row].iloc[0]
-                    eps_prev = stmt.loc[eps_row].iloc[1]
-                else:
+                    eps_rows = [r for r in stmt.index if 'EPS' in str(r) and 'Diluted' in str(r)]
+                    if not eps_rows: eps_rows = [r for r in stmt.index if 'EPS' in str(r)]
+                    
+                    eps_data = stmt.loc[eps_rows[0]].dropna() if eps_rows else []
+                    if len(eps_data) >= 2:
+                        eps_now = eps_data.iloc[0]
+                        eps_prev = eps_data.iloc[1]
+                    else:
+                        eps_now, eps_prev = None, None
+                else: # Trimestrial Q/Q YoY
                     stmt = ticker.quarterly_income_stmt
-                    eps_row = 'Diluted EPS' if 'Diluted EPS' in stmt.index else 'Basic EPS'
-                    eps_now = stmt.loc[eps_row].iloc[0]
-                    eps_prev = stmt.loc[eps_row].iloc[4]
+                    eps_rows = [r for r in stmt.index if 'EPS' in str(r) and 'Diluted' in str(r)]
+                    if not eps_rows: eps_rows = [r for r in stmt.index if 'EPS' in str(r)]
+                    
+                    eps_data = stmt.loc[eps_rows[0]].dropna() if eps_rows else []
+                    if len(eps_data) >= 5:
+                        eps_now = eps_data.iloc[0] # Trimestrul Curent
+                        eps_prev = eps_data.iloc[4] # Același trimestru anul trecut
+                    else:
+                        eps_now, eps_prev = None, None
                 
-                # Reguli de prevenire a erorilor matematice (nan / infinit)
-                if pd.isna(eps_now) or pd.isna(eps_prev):
-                    st.warning("Datele EPS lipsesc pe Yahoo Finance pentru perioada selectată.")
+                if eps_now is None or eps_prev is None:
+                    st.warning(f"Yahoo Finance nu a raportat suficiente trimestre consecutive pentru {lynch_period}.")
                     lynch_fair_value = 0
                 elif eps_prev <= 0:
-                    st.warning("EPS-ul anterior a fost zero sau negativ. Creșterea procentuală nu se poate calcula matematic.")
+                    st.warning("EPS-ul anterior a fost zero sau negativ. Nu se poate calcula matematic procentul.")
                     lynch_fair_value = 0
                 else:
                     growth_ratio = (eps_now / eps_prev)
                     growth_percentage = (growth_ratio - 1) * 100
-                    lynch_fair_value = eps * growth_percentage
+                    
+                    # Formula ta: EPS Curent TTM (FY) * Procentul de creștere rezultat
+                    lynch_fair_value = eps_ttm * growth_percentage
                     
                     st.metric("Fair Value (Lynch)", f"{max(0, lynch_fair_value):.2f} USD")
-                    st.caption(f"Creștere {eps_row} ({lynch_period}): {growth_percentage:.2f}%")
+                    st.caption(f"Calcul: EPS Curent ({eps_ttm}) * Creșterea {lynch_period} ({growth_percentage:.2f}%)")
             except Exception as e:
-                st.error("Date insuficiente în rapoartele financiare pentru această metodă.")
+                st.error("Date insuficiente în rapoartele financiare.")
                 lynch_fair_value = 0
 
-        # --- RÂNDUL 2 (Forțat pentru mobil: 3 și 4) ---
+        # --- RÂNDUL 2 (Garantează ordinea 3 și 4) ---
         r2_col1, r2_col2 = st.columns(2)
 
         # 3. EVALUARE RELATIVĂ
         with r2_col1:
             st.subheader("3. Evaluare Relativă")
-            relative_fair_value = eps * sector_pe
+            relative_fair_value = eps_ttm * sector_pe
             st.metric("Fair Value (Relativ)", f"{max(0, relative_fair_value):.2f} USD")
-            st.caption(f"Calculat ca: EPS ({eps}) * P/E Sector ({sector_pe})")
+            st.caption(f"Calculat ca: EPS ({eps_ttm}) * P/E Sector ({sector_pe})")
 
         # 4. METODA PEG
         with r2_col2:
             st.subheader("4. Metoda PEG")
             peg_ratio = info.get('pegRatio')
             
-            peg_fair_value = eps * forward_growth
+            peg_fair_value = eps_ttm * forward_growth
             
             st.metric("Fair Value (PEG = 1)", f"{max(0, peg_fair_value):.2f} USD")
             
-            if eps <= 0:
-                st.warning("Compania are EPS negativ sau 0. Evaluarea PEG nu este relevantă.")
+            if eps_ttm <= 0:
+                st.warning("Compania are EPS negativ sau 0.")
             elif forward_growth <= 0:
-                st.warning("Rata de creștere este 0 sau negativă. Ajustează parametrul din meniul lateral.")
+                st.warning("Rata de creștere este 0 sau negativă.")
             elif peg_ratio:
-                st.caption(f"PEG actual raportat: {peg_ratio}. Fair Value asumat pentru un PEG perfect de 1.0")
+                st.caption(f"PEG actual raportat: {peg_ratio}. Fair Value asumat pentru un PEG de 1.0")
             else:
                 st.caption("Calculat asertiv pentru un PEG perfect de 1.0.")
 
