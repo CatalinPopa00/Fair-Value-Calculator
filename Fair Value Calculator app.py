@@ -22,16 +22,14 @@ if ticker_symbol:
         eps = info.get('trailingEps', 0)
         beta = info.get('beta', 1.0)
         
-        # 1. Calcul WACC automat (simplificat CAPM)
-        # Risk-free rate (aproximare bonduri SUA 10 ani)
+        # 1. Calcul WACC automat
         try:
             tnx = yf.Ticker("^TNX").info.get('regularMarketPrice', 4.0) / 100
         except:
             tnx = 0.04
-        market_return = 0.10 # Randament istoric piata
+        market_return = 0.10 
         cost_of_equity = tnx + beta * (market_return - tnx)
         
-        # Default WACC bazat pe cost of equity (ignorând datoria pt simplificare in default)
         default_wacc = round(cost_of_equity * 100, 2)
         if default_wacc <= 0 or pd.isna(default_wacc): default_wacc = 8.5
         
@@ -39,13 +37,16 @@ if ticker_symbol:
         wacc = st.sidebar.number_input("WACC (%)", value=float(default_wacc), step=0.1) / 100
         terminal_growth = st.sidebar.number_input("Terminal Growth Rate (%)", value=2.5, step=0.1) / 100
         
+        st.sidebar.subheader("Ajustări Peter Lynch")
+        lynch_period = st.sidebar.radio("Baza de calcul pentru creștere", ["Anual (FY Y/Y)", "Trimestrial (Q/Q YoY)"])
+
         st.sidebar.subheader("Ajustări Evaluare Relativă")
-        # YFinance nu da mereu P/E-ul sectorului, setam un default ajustabil
         sector_pe = st.sidebar.number_input("P/E Mediu Sector", value=15.0, step=0.5)
 
         st.sidebar.subheader("Ajustări PEG")
-        # Preluare crestere estimata (forward)
-        est_growth = info.get('earningsGrowth', 0.10) * 100
+        # Reparare eroare PEG 0: Extragem cresterea sau setam un default de 10% daca YFinance nu are datele
+        raw_growth = info.get('earningsGrowth')
+        est_growth = (raw_growth * 100) if raw_growth is not None else 10.0
         forward_growth = st.sidebar.number_input("Rata de creștere estimată (%)", value=float(est_growth), step=1.0)
 
         # --- CALCUL METODE ---
@@ -59,24 +60,19 @@ if ticker_symbol:
             st.subheader("1. Discounted Cashflow (DCF)")
             try:
                 cashflow = ticker.cashflow
-                # Luam ultimul Free Cash Flow (Operating Cash Flow - Capital Expenditures)
                 if 'Free Cash Flow' in cashflow.index:
                     fcf_current = cashflow.loc['Free Cash Flow'].iloc[0]
                 else:
                     ocf = cashflow.loc['Operating Cash Flow'].iloc[0]
                     capex = cashflow.loc['Capital Expenditure'].iloc[0]
-                    fcf_current = ocf + capex # Capex e de obicei negativ in YF
+                    fcf_current = ocf + capex 
                 
                 shares_out = info.get('sharesOutstanding', 1)
                 fcf_per_share = fcf_current / shares_out
                 
-                # Proiectie 5 ani cu rata de crestere estimata
                 fcf_projected = [fcf_per_share * (1 + forward_growth/100)**i for i in range(1, 6)]
-                
-                # Actualizare (Discounting)
                 pv_fcf = sum([fcf / ((1 + wacc)**i) for i, fcf in enumerate(fcf_projected, 1)])
                 
-                # Terminal Value
                 terminal_value = (fcf_projected[-1] * (1 + terminal_growth)) / (wacc - terminal_growth)
                 pv_tv = terminal_value / ((1 + wacc)**5)
                 
@@ -87,31 +83,32 @@ if ticker_symbol:
                 st.error("Date insuficiente pentru calculul DCF din YFinance.")
                 dcf_fair_value = 0
                 
-        # 2. METODA PETER LYNCH (Modificată după regula ta)
+        # 2. METODA PETER LYNCH 
         with col2:
             st.subheader("2. Metoda Peter Lynch")
             try:
-                q_earnings = ticker.quarterly_income_stmt
-                # Extragem Diluted EPS pentru ultimele trimestre raportate
-                eps_q = q_earnings.loc['Diluted EPS'].iloc[0]
-                eps_q_last_year = q_earnings.loc['Diluted EPS'].iloc[4] # Acelasi trimestru, anul trecut
+                if lynch_period == "Anual (FY Y/Y)":
+                    income_stmt = ticker.income_stmt
+                    eps_now = income_stmt.loc['Diluted EPS'].iloc[0]
+                    eps_prev = income_stmt.loc['Diluted EPS'].iloc[1]
+                else:
+                    q_earnings = ticker.quarterly_income_stmt
+                    eps_now = q_earnings.loc['Diluted EPS'].iloc[0]
+                    eps_prev = q_earnings.loc['Diluted EPS'].iloc[4]
                 
-                # Rata de crestere (Growth) ca numar intreg
-                growth_ratio = (eps_q / eps_q_last_year)
+                growth_ratio = (eps_now / eps_prev)
                 growth_percentage = (growth_ratio - 1) * 100
-                
-                # Formula agreata: EPS * Multiplicator de crestere (integer)
                 lynch_fair_value = eps * growth_percentage
                 
                 st.metric("Fair Value (Lynch)", f"{max(0, lynch_fair_value):.2f} USD")
-                st.caption(f"Creștere EPS YoY: {growth_percentage:.2f}% (Folosită ca multiplicator P/E conform Lynch)")
+                st.caption(f"Creștere EPS ({lynch_period}): {growth_percentage:.2f}% (Folosită ca multiplicator)")
             except Exception as e:
-                st.error("Date trimestriale insuficiente pentru creșterea YoY.")
+                st.error(f"Date insuficiente pentru creșterea {lynch_period}.")
                 lynch_fair_value = 0
 
         # 3. EVALUARE RELATIVĂ
         with col1:
-            st.subheader("3. Evaluare Relativă (P/E Sector)")
+            st.subheader("3. Evaluare Relativă")
             relative_fair_value = eps * sector_pe
             st.metric("Fair Value (Relativ)", f"{max(0, relative_fair_value):.2f} USD")
             st.caption(f"Calculat ca: EPS ({eps}) * P/E Sector ({sector_pe})")
@@ -121,11 +118,16 @@ if ticker_symbol:
             st.subheader("4. Metoda PEG")
             peg_ratio = info.get('pegRatio')
             
-            # Pretul corect unde PEG = 1 => Pret = EPS * Rata de crestere
             peg_fair_value = eps * forward_growth
             
             st.metric("Fair Value (PEG = 1)", f"{max(0, peg_fair_value):.2f} USD")
-            if peg_ratio:
+            
+            # Mesaje explicative pentru corectarea vizuala a erorilor de date
+            if eps <= 0:
+                st.warning("Compania are EPS negativ sau 0. Evaluarea PEG nu este relevantă.")
+            elif forward_growth <= 0:
+                st.warning("Rata de creștere este 0 sau negativă. Ajustează parametrul din meniul lateral.")
+            elif peg_ratio:
                 st.caption(f"PEG actual raportat: {peg_ratio}. Fair Value asumat pentru un PEG perfect de 1.0")
             else:
                 st.caption("Calculat asertiv pentru un PEG perfect de 1.0.")
@@ -137,11 +139,9 @@ if ticker_symbol:
         valid_evals = [v for v in [dcf_fair_value, lynch_fair_value, relative_fair_value, peg_fair_value] if v > 0]
         if valid_evals:
             mediana = np.median(valid_evals)
-            
-            # Culoare verde daca actiunea e subevaluata, rosu daca e supraevaluata fata de mediana
             delta = mediana - current_price
             
-            st.metric("Fair Value Median (Consensul celor 4 metode)", 
+            st.metric("Fair Value Median (Consensul metodelor valide)", 
                       f"{mediana:.2f} USD", 
                       f"{delta:.2f} USD vs Preț Curent",
                       delta_color="normal" if delta > 0 else "inverse")
