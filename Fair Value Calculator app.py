@@ -8,6 +8,21 @@ st.set_page_config(page_title="Fair Value Calculator", layout="wide")
 st.title("📈 Calculator Fair Value")
 st.markdown("Aplicație bazată pe date reale (Yahoo Finance) pentru evaluarea acțiunilor prin 4 metode.")
 
+# Dictionar factual cu ETF-urile majore pentru fiecare sector
+SECTOR_ETFS = {
+    'Technology': 'XLK',
+    'Healthcare': 'XLV',
+    'Financial Services': 'XLF',
+    'Consumer Cyclical': 'XLY',
+    'Industrials': 'XLI',
+    'Consumer Defensive': 'XLP',
+    'Energy': 'XLE',
+    'Utilities': 'XLU',
+    'Real Estate': 'VNQ',
+    'Basic Materials': 'XLB',
+    'Communication Services': 'XLC'
+}
+
 # --- SIDEBAR PENTRU INPUT-URI ---
 st.sidebar.header("Parametri de Bază")
 ticker_symbol = st.sidebar.text_input("Introdu Ticker-ul (ex: AAPL, MSFT)", value="AAPL").upper()
@@ -19,10 +34,30 @@ if ticker_symbol:
         
         # Preluare date factuale necesare
         current_price = info.get('currentPrice', info.get('regularMarketPrice', 0))
-        # Acesta este EPS-ul curent (FY / Trailing 12 Months)
         eps_ttm = info.get('trailingEps', 0) 
         beta = info.get('beta', 1.0)
+        company_sector = info.get('sector', 'Nespecificat')
         
+        # --- PANOU INFORMATIV: ESTIMĂRI ANALIȘTI ---
+        st.sidebar.markdown("---")
+        st.sidebar.subheader("📊 Estimări Analiști (Consens)")
+        
+        forward_eps = info.get('forwardEps')
+        if forward_eps and eps_ttm and eps_ttm > 0:
+            implied_1y_eps_growth = ((forward_eps / eps_ttm) - 1) * 100
+            st.sidebar.write(f"**Creștere EPS (Estimare 1 An):** {implied_1y_eps_growth:.2f}%")
+        else:
+            st.sidebar.write("**Creștere EPS (Estimare 1 An):** Indisponibil")
+            
+        rev_growth = info.get('revenueGrowth')
+        if rev_growth is not None:
+            st.sidebar.write(f"**Creștere Venituri (YoY):** {rev_growth * 100:.2f}%")
+        else:
+            st.sidebar.write("**Creștere Venituri (YoY):** Indisponibil")
+            
+        st.sidebar.caption("Notă: Yahoo Finance nu oferă estimări de consens pentru Cashflow. Se recomandă folosirea creșterii EPS ca referință.")
+        st.sidebar.markdown("---")
+
         # 1. Calcul WACC automat
         try:
             tnx = yf.Ticker("^TNX").info.get('regularMarketPrice', 4.0) / 100
@@ -42,7 +77,27 @@ if ticker_symbol:
         lynch_period = st.sidebar.radio("Baza de calcul pentru creștere", ["Anual (FY Y/Y)", "Trimestrial (Q/Q YoY)"])
 
         st.sidebar.subheader("Ajustări Evaluare Relativă")
-        sector_pe = st.sidebar.number_input("P/E Mediu Sector", value=15.0, step=0.5)
+        # --- Extragere Automată P/E Sector ---
+        fetched_pe = 15.0
+        etf_used = "Default"
+        
+        if company_sector in SECTOR_ETFS:
+            etf_ticker = SECTOR_ETFS[company_sector]
+            try:
+                etf_info = yf.Ticker(etf_ticker).info
+                if 'trailingPE' in etf_info and etf_info['trailingPE'] is not None:
+                    fetched_pe = round(etf_info['trailingPE'], 2)
+                    etf_used = etf_ticker
+            except:
+                pass
+                
+        st.sidebar.write(f"Sector identificat: **{company_sector}**")
+        if etf_used != "Default":
+            st.sidebar.caption(f"P/E extras automat din ETF-ul: {etf_used}")
+        else:
+            st.sidebar.caption("Nu s-a putut extrage ETF-ul. Se folosește o medie generală.")
+            
+        sector_pe = st.sidebar.number_input("P/E Mediu Sector", value=float(fetched_pe), step=0.5)
 
         st.sidebar.subheader("Ajustări PEG")
         raw_growth = info.get('earningsGrowth')
@@ -53,7 +108,7 @@ if ticker_symbol:
         st.header(f"Rezultate pentru {info.get('shortName', ticker_symbol)} ({ticker_symbol})")
         st.write(f"**Preț Curent:** {current_price} USD | **EPS (TTM / FY):** {eps_ttm} USD")
         
-        # --- RÂNDUL 1 (Garantează ordinea 1 și 2) ---
+        # --- RÂNDUL 1 (1 și 2) ---
         r1_col1, r1_col2 = st.columns(2)
         
         # 1. DISCOUNTED CASH FLOW (DCF)
@@ -81,14 +136,13 @@ if ticker_symbol:
                 st.metric("Fair Value (DCF)", f"{max(0, dcf_fair_value):.2f} USD")
                 st.caption(f"Calculat cu WACC: {wacc*100:.2f}%, FCF initial/actiune: {fcf_per_share:.2f} USD")
             except Exception as e:
-                st.error("Date insuficiene pentru calculul DCF din YFinance.")
+                st.error("Date insuficiente pentru calculul DCF din YFinance.")
                 dcf_fair_value = 0
                 
         # 2. METODA PETER LYNCH 
         with r1_col2:
             st.subheader("2. Metoda Peter Lynch")
             try:
-                # Căutăm sigur rândul EPS și curățăm datele Nule cu .dropna()
                 if lynch_period == "Anual (FY Y/Y)":
                     stmt = ticker.income_stmt
                     eps_rows = [r for r in stmt.index if 'EPS' in str(r) and 'Diluted' in str(r)]
@@ -100,15 +154,15 @@ if ticker_symbol:
                         eps_prev = eps_data.iloc[1]
                     else:
                         eps_now, eps_prev = None, None
-                else: # Trimestrial Q/Q YoY
+                else:
                     stmt = ticker.quarterly_income_stmt
                     eps_rows = [r for r in stmt.index if 'EPS' in str(r) and 'Diluted' in str(r)]
                     if not eps_rows: eps_rows = [r for r in stmt.index if 'EPS' in str(r)]
                     
                     eps_data = stmt.loc[eps_rows[0]].dropna() if eps_rows else []
                     if len(eps_data) >= 5:
-                        eps_now = eps_data.iloc[0] # Trimestrul Curent
-                        eps_prev = eps_data.iloc[4] # Același trimestru anul trecut
+                        eps_now = eps_data.iloc[0] 
+                        eps_prev = eps_data.iloc[4] 
                     else:
                         eps_now, eps_prev = None, None
                 
@@ -122,7 +176,6 @@ if ticker_symbol:
                     growth_ratio = (eps_now / eps_prev)
                     growth_percentage = (growth_ratio - 1) * 100
                     
-                    # Formula ta: EPS Curent TTM (FY) * Procentul de creștere rezultat
                     lynch_fair_value = eps_ttm * growth_percentage
                     
                     st.metric("Fair Value (Lynch)", f"{max(0, lynch_fair_value):.2f} USD")
@@ -131,7 +184,7 @@ if ticker_symbol:
                 st.error("Date insuficiente în rapoartele financiare.")
                 lynch_fair_value = 0
 
-        # --- RÂNDUL 2 (Garantează ordinea 3 și 4) ---
+        # --- RÂNDUL 2 (3 și 4) ---
         r2_col1, r2_col2 = st.columns(2)
 
         # 3. EVALUARE RELATIVĂ
