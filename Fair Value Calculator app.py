@@ -2,26 +2,25 @@ import streamlit as st
 import yfinance as yf
 import pandas as pd
 import numpy as np
+import requests
 
 # Setari pagina
 st.set_page_config(page_title="Fair Value Calculator", layout="wide")
 st.title("📈 Calculator Fair Value")
-st.markdown("Aplicație bazată pe date reale (Yahoo Finance) pentru evaluarea acțiunilor prin 4 metode.")
+st.markdown("Aplicație bazată pe date reale pentru evaluarea acțiunilor prin 4 metode.")
 
-# Dictionar factual cu ETF-urile majore pentru fiecare sector
 SECTOR_ETFS = {
-    'Technology': 'XLK',
-    'Healthcare': 'XLV',
-    'Financial Services': 'XLF',
-    'Consumer Cyclical': 'XLY',
-    'Industrials': 'XLI',
-    'Consumer Defensive': 'XLP',
-    'Energy': 'XLE',
-    'Utilities': 'XLU',
-    'Real Estate': 'VNQ',
-    'Basic Materials': 'XLB',
-    'Communication Services': 'XLC'
+    'Technology': 'XLK', 'Healthcare': 'XLV', 'Financial Services': 'XLF',
+    'Consumer Cyclical': 'XLY', 'Industrials': 'XLI', 'Consumer Defensive': 'XLP',
+    'Energy': 'XLE', 'Utilities': 'XLU', 'Real Estate': 'VNQ',
+    'Basic Materials': 'XLB', 'Communication Services': 'XLC'
 }
+
+# Incarcare API Key din Streamlit Secrets in mod sigur
+try:
+    api_key = st.secrets["FMP_API_KEY"]
+except:
+    api_key = None
 
 # --- SIDEBAR PENTRU INPUT-URI ---
 st.sidebar.header("Parametri de Bază")
@@ -32,7 +31,6 @@ if ticker_symbol:
         ticker = yf.Ticker(ticker_symbol)
         info = ticker.info
         
-        # Preluare date factuale necesare
         current_price = info.get('currentPrice', info.get('regularMarketPrice', 0))
         eps_ttm = info.get('trailingEps', 0) 
         beta = info.get('beta', 1.0)
@@ -42,20 +40,29 @@ if ticker_symbol:
         st.sidebar.markdown("---")
         st.sidebar.subheader("📊 Estimări Analiști (Consens)")
         
-        forward_eps = info.get('forwardEps')
-        if forward_eps and eps_ttm and eps_ttm > 0:
-            implied_1y_eps_growth = ((forward_eps / eps_ttm) - 1) * 100
-            st.sidebar.write(f"**Creștere EPS (Estimare 1 An):** {implied_1y_eps_growth:.2f}%")
+        if api_key:
+            # Extragere date de pe Financial Modeling Prep in background
+            try:
+                url = f"https://financialmodelingprep.com/api/v3/analyst-estimates/{ticker_symbol}?limit=2&apikey={api_key}"
+                response = requests.get(url)
+                if response.status_code == 200:
+                    data = response.json()
+                    if len(data) > 0:
+                        est_eps_current = data[0].get('estimatedEps')
+                        est_rev_current = data[0].get('estimatedRevenue')
+                        st.sidebar.success("Date FMP conectate automat!")
+                        st.sidebar.write(f"**EPS Estimat:** {est_eps_current} USD")
+                        if est_rev_current:
+                            st.sidebar.write(f"**Venituri Estimate:** {est_rev_current:,.0f} USD")
+                    else:
+                        st.sidebar.warning("Nu s-au găsit estimări pe FMP pentru acest ticker.")
+                else:
+                    st.sidebar.error("Eroare API. Verifică secțiunea Secrets din Streamlit.")
+            except Exception as e:
+                st.sidebar.error("Eroare la conexiunea cu FMP.")
         else:
-            st.sidebar.write("**Creștere EPS (Estimare 1 An):** Indisponibil")
-            
-        rev_growth = info.get('revenueGrowth')
-        if rev_growth is not None:
-            st.sidebar.write(f"**Creștere Venituri (YoY):** {rev_growth * 100:.2f}%")
-        else:
-            st.sidebar.write("**Creștere Venituri (YoY):** Indisponibil")
-            
-        st.sidebar.caption("Notă: Yahoo Finance nu oferă estimări de consens pentru Cashflow. Se recomandă folosirea creșterii EPS ca referință.")
+            st.sidebar.error("⚠️ Cheia API lipsește din setările Streamlit Secrets.")
+
         st.sidebar.markdown("---")
 
         # 1. Calcul WACC automat
@@ -180,28 +187,26 @@ if ticker_symbol:
                     st.metric("Fair Value (Lynch)", f"{max(0, lynch_fair_value):.2f} USD")
                     st.caption(f"Calcul: EPS Curent ({eps_ttm}) * Creșterea {lynch_period} ({growth_percentage:.2f}%)")
                 
-                # --- AXA VIZUALĂ P/E ---
+                # --- AXA VIZUALĂ P/E LYNCH ---
                 if eps_ttm > 0:
                     current_pe = current_price / eps_ttm
                     
-                    # Logica de interpretare
                     if current_pe <= 15:
                         interpretare = "Subevaluat"
-                        culoare = "#4CAF50" # Verde
+                        culoare = "#4CAF50" 
                     elif current_pe < 20:
                         interpretare = "Ușor subevaluat"
-                        culoare = "#8BC34A" # Verde deschis
+                        culoare = "#8BC34A" 
                     elif current_pe == 20:
                         interpretare = "Fair value"
-                        culoare = "#FFC107" # Galben
+                        culoare = "#FFC107" 
                     elif current_pe < 25:
                         interpretare = "Ușor supraevaluat"
-                        culoare = "#FF9800" # Portocaliu
+                        culoare = "#FF9800" 
                     else:
                         interpretare = "Supraevaluat"
-                        culoare = "#F44336" # Rosu
+                        culoare = "#F44336" 
                         
-                    # Poziționarea markerului pe axă (procente)
                     if current_pe <= 15:
                         pos = (current_pe / 15) * 30
                     elif current_pe <= 20:
@@ -209,25 +214,23 @@ if ticker_symbol:
                     elif current_pe <= 25:
                         pos = 50 + ((current_pe - 20) / 5) * 20
                     else:
-                        pos = 70 + min(((current_pe - 25) / 15) * 30, 30) # Se plafonează la 100% vizual
+                        pos = 70 + min(((current_pe - 25) / 15) * 30, 30) 
                     
-                    st.markdown(f"""
-                    <div style="margin-top: 15px; margin-bottom: 10px; padding: 10px; background-color: rgba(128,128,128,0.1); border-radius: 8px;">
-                        <div style="font-size: 14px; margin-bottom: 15px;">📊 <b>P/E Curent: {current_pe:.1f}</b> (<span style="color: {culoare}; font-weight: bold;">{interpretare}</span>)</div>
-                        <div style="position: relative; width: 100%; height: 12px; background: linear-gradient(to right, #4CAF50 30%, #8BC34A 30% 50%, #FFC107 50% 70%, #F44336 70%); border-radius: 6px;">
-                            <div style="position: absolute; left: 30%; top: -4px; bottom: -4px; width: 2px; background-color: white; opacity: 0.7;"></div>
-                            <div style="position: absolute; left: 50%; top: -4px; bottom: -4px; width: 2px; background-color: white; opacity: 0.7;"></div>
-                            <div style="position: absolute; left: 70%; top: -4px; bottom: -4px; width: 2px; background-color: white; opacity: 0.7;"></div>
-                            
-                            <div style="position: absolute; left: {pos}%; top: -6px; width: 4px; height: 24px; background-color: white; border: 2px solid #333; transform: translateX(-50%); border-radius: 2px;"></div>
-                        </div>
-                        <div style="position: relative; width: 100%; height: 15px; margin-top: 8px; font-size: 12px; font-weight: bold; color: gray;">
-                            <span style="position: absolute; left: 30%; transform: translateX(-50%);">15</span>
-                            <span style="position: absolute; left: 50%; transform: translateX(-50%);">20</span>
-                            <span style="position: absolute; left: 70%; transform: translateX(-50%);">25+</span>
-                        </div>
-                    </div>
-                    """, unsafe_allow_html=True)
+                    html_content = f"""<div style="margin-top: 15px; margin-bottom: 30px; padding: 15px; background-color: rgba(128,128,128,0.1); border-radius: 8px;">
+    <div style="font-size: 14px; margin-bottom: 15px;">📊 <b>P/E Curent: {current_pe:.1f}</b> (<span style="color: {culoare}; font-weight: bold;">{interpretare}</span>)</div>
+    <div style="position: relative; width: 100%; height: 12px; background: linear-gradient(to right, #4CAF50 30%, #8BC34A 30% 50%, #FFC107 50% 70%, #F44336 70%); border-radius: 6px;">
+        <div style="position: absolute; left: 30%; top: -4px; bottom: -4px; width: 2px; background-color: white; opacity: 0.7;"></div>
+        <div style="position: absolute; left: 50%; top: -4px; bottom: -4px; width: 2px; background-color: white; opacity: 0.7;"></div>
+        <div style="position: absolute; left: 70%; top: -4px; bottom: -4px; width: 2px; background-color: white; opacity: 0.7;"></div>
+        <div style="position: absolute; left: {pos}%; top: -6px; width: 4px; height: 24px; background-color: white; border: 2px solid #333; transform: translateX(-50%); border-radius: 2px;"></div>
+    </div>
+    <div style="position: relative; width: 100%; height: 15px; margin-top: 8px; font-size: 12px; font-weight: bold; color: gray;">
+        <span style="position: absolute; left: 30%; transform: translateX(-50%);">15</span>
+        <span style="position: absolute; left: 50%; transform: translateX(-50%);">20</span>
+        <span style="position: absolute; left: 70%; transform: translateX(-50%);">25+</span>
+    </div>
+</div>"""
+                    st.markdown(html_content, unsafe_allow_html=True)
                 elif eps_ttm < 0:
                     st.warning("Nu se poate desena axa deoarece compania are câștiguri negative (EPS < 0).")
                     
