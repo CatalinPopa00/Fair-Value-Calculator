@@ -77,7 +77,6 @@ if ticker_symbol:
         lynch_period = st.sidebar.radio("Baza de calcul pentru creștere", ["Anual (FY Y/Y)", "Trimestrial (Q/Q YoY)"])
 
         st.sidebar.subheader("Ajustări Evaluare Relativă")
-        # --- Extragere Automată P/E Sector ---
         fetched_pe = 15.0
         etf_used = "Default"
         
@@ -108,7 +107,7 @@ if ticker_symbol:
         st.header(f"Rezultate pentru {info.get('shortName', ticker_symbol)} ({ticker_symbol})")
         st.write(f"**Preț Curent:** {current_price} USD | **EPS (TTM / FY):** {eps_ttm} USD")
         
-        # --- RÂNDUL 1 (1 și 2) ---
+        # --- RÂNDUL 1 ---
         r1_col1, r1_col2 = st.columns(2)
         
         # 1. DISCOUNTED CASH FLOW (DCF)
@@ -180,11 +179,63 @@ if ticker_symbol:
                     
                     st.metric("Fair Value (Lynch)", f"{max(0, lynch_fair_value):.2f} USD")
                     st.caption(f"Calcul: EPS Curent ({eps_ttm}) * Creșterea {lynch_period} ({growth_percentage:.2f}%)")
+                
+                # --- AXA VIZUALĂ P/E ---
+                if eps_ttm > 0:
+                    current_pe = current_price / eps_ttm
+                    
+                    # Logica de interpretare
+                    if current_pe <= 15:
+                        interpretare = "Subevaluat"
+                        culoare = "#4CAF50" # Verde
+                    elif current_pe < 20:
+                        interpretare = "Ușor subevaluat"
+                        culoare = "#8BC34A" # Verde deschis
+                    elif current_pe == 20:
+                        interpretare = "Fair value"
+                        culoare = "#FFC107" # Galben
+                    elif current_pe < 25:
+                        interpretare = "Ușor supraevaluat"
+                        culoare = "#FF9800" # Portocaliu
+                    else:
+                        interpretare = "Supraevaluat"
+                        culoare = "#F44336" # Rosu
+                        
+                    # Poziționarea markerului pe axă (procente)
+                    if current_pe <= 15:
+                        pos = (current_pe / 15) * 30
+                    elif current_pe <= 20:
+                        pos = 30 + ((current_pe - 15) / 5) * 20
+                    elif current_pe <= 25:
+                        pos = 50 + ((current_pe - 20) / 5) * 20
+                    else:
+                        pos = 70 + min(((current_pe - 25) / 15) * 30, 30) # Se plafonează la 100% vizual
+                    
+                    st.markdown(f"""
+                    <div style="margin-top: 15px; margin-bottom: 10px; padding: 10px; background-color: rgba(128,128,128,0.1); border-radius: 8px;">
+                        <div style="font-size: 14px; margin-bottom: 15px;">📊 <b>P/E Curent: {current_pe:.1f}</b> (<span style="color: {culoare}; font-weight: bold;">{interpretare}</span>)</div>
+                        <div style="position: relative; width: 100%; height: 12px; background: linear-gradient(to right, #4CAF50 30%, #8BC34A 30% 50%, #FFC107 50% 70%, #F44336 70%); border-radius: 6px;">
+                            <div style="position: absolute; left: 30%; top: -4px; bottom: -4px; width: 2px; background-color: white; opacity: 0.7;"></div>
+                            <div style="position: absolute; left: 50%; top: -4px; bottom: -4px; width: 2px; background-color: white; opacity: 0.7;"></div>
+                            <div style="position: absolute; left: 70%; top: -4px; bottom: -4px; width: 2px; background-color: white; opacity: 0.7;"></div>
+                            
+                            <div style="position: absolute; left: {pos}%; top: -6px; width: 4px; height: 24px; background-color: white; border: 2px solid #333; transform: translateX(-50%); border-radius: 2px;"></div>
+                        </div>
+                        <div style="position: relative; width: 100%; height: 15px; margin-top: 8px; font-size: 12px; font-weight: bold; color: gray;">
+                            <span style="position: absolute; left: 30%; transform: translateX(-50%);">15</span>
+                            <span style="position: absolute; left: 50%; transform: translateX(-50%);">20</span>
+                            <span style="position: absolute; left: 70%; transform: translateX(-50%);">25+</span>
+                        </div>
+                    </div>
+                    """, unsafe_allow_html=True)
+                elif eps_ttm < 0:
+                    st.warning("Nu se poate desena axa deoarece compania are câștiguri negative (EPS < 0).")
+                    
             except Exception as e:
                 st.error("Date insuficiente în rapoartele financiare.")
                 lynch_fair_value = 0
 
-        # --- RÂNDUL 2 (3 și 4) ---
+        # --- RÂNDUL 2 ---
         r2_col1, r2_col2 = st.columns(2)
 
         # 3. EVALUARE RELATIVĂ
