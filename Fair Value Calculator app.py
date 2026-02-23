@@ -18,7 +18,8 @@ SECTOR_ETFS = {
 
 # Incarcare API Key din Streamlit Secrets in mod sigur
 try:
-    api_key = st.secrets["FMP_API_KEY"]
+    # Eliminam posibilele spatii adaugate din greseala la copy-paste
+    api_key = st.secrets["FMP_API_KEY"].strip()
 except:
     api_key = None
 
@@ -45,6 +46,7 @@ if ticker_symbol:
             try:
                 url = f"https://financialmodelingprep.com/api/v3/analyst-estimates/{ticker_symbol}?limit=2&apikey={api_key}"
                 response = requests.get(url)
+                
                 if response.status_code == 200:
                     data = response.json()
                     if len(data) > 0:
@@ -56,10 +58,21 @@ if ticker_symbol:
                             st.sidebar.write(f"**Venituri Estimate:** {est_rev_current:,.0f} USD")
                     else:
                         st.sidebar.warning("Nu s-au găsit estimări pe FMP pentru acest ticker.")
+                
+                # FMP returneaza 403 daca ai plan gratuit si endpoint-ul cere plan platit
+                elif response.status_code == 403:
+                    st.sidebar.warning("FMP limitează acest cont la planul gratuit. Se folosesc datele Yahoo Finance ca rezervă.")
+                    forward_eps = info.get('forwardEps')
+                    if forward_eps and eps_ttm and eps_ttm > 0:
+                        implied_1y_eps_growth = ((forward_eps / eps_ttm) - 1) * 100
+                        st.sidebar.write(f"**Creștere EPS (Estimare YF):** {implied_1y_eps_growth:.2f}%")
+                    else:
+                        st.sidebar.write("**Creștere EPS:** Indisponibil")
                 else:
-                    st.sidebar.error("Eroare API. Verifică secțiunea Secrets din Streamlit.")
+                    st.sidebar.error(f"Eroare tehnică FMP API ({response.status_code}). Se folosește rezerva Yahoo Finance.")
+                    
             except Exception as e:
-                st.sidebar.error("Eroare la conexiunea cu FMP.")
+                st.sidebar.error("Eroare la conexiunea cu internetul/FMP.")
         else:
             st.sidebar.error("⚠️ Cheia API lipsește din setările Streamlit Secrets.")
 
