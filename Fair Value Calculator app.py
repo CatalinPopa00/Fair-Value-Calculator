@@ -17,10 +17,10 @@ SECTOR_ETFS = {
     'Basic Materials': 'XLB', 'Communication Services': 'XLC'
 }
 
-# Incarcare API Key din Streamlit Secrets in mod sigur
+# Incarcare API Key din Streamlit Secrets
 try:
     api_key = st.secrets["FMP_API_KEY"].strip()
-except:
+except Exception as e:
     api_key = None
 
 # --- SIDEBAR PENTRU INPUT-URI ---
@@ -29,13 +29,15 @@ ticker_symbol = st.sidebar.text_input("Introdu Ticker-ul (ex: AAPL, MSFT)", valu
 
 if ticker_symbol:
     try:
+        # Preluare date de baza
         ticker = yf.Ticker(ticker_symbol)
         info = ticker.info
         
-        # Validare rapida: Daca Yahoo blocheaza, info vine gol
-        if not info or len(info) <= 2:
-             raise ValueError("Yahoo Finance a refuzat conexiunea (Rate Limit). Info este gol.")
-             
+        # Daca info e gol, inseamna ca Yahoo Finance ne-a blocat
+        if not info or len(info) < 5:
+            st.error("⚠️ Yahoo Finance refuză conexiunea temporar. Încearcă peste câteva minute.")
+            st.stop()
+
         current_price = info.get('currentPrice', info.get('regularMarketPrice', 0))
         eps_ttm = info.get('trailingEps', 0) 
         beta = info.get('beta', 1.0)
@@ -46,38 +48,21 @@ if ticker_symbol:
         st.sidebar.subheader("📊 Estimări Analiști (Consens)")
         
         if api_key:
-            # Extragere date de pe Financial Modeling Prep in background
             try:
                 url = f"https://financialmodelingprep.com/api/v3/analyst-estimates/{ticker_symbol}?limit=2&apikey={api_key}"
                 response = requests.get(url)
-                
                 if response.status_code == 200:
                     data = response.json()
                     if len(data) > 0:
                         est_eps_current = data[0].get('estimatedEps')
-                        est_rev_current = data[0].get('estimatedRevenue')
-                        st.sidebar.success("Date FMP conectate automat!")
+                        st.sidebar.success("Date FMP conectate!")
                         st.sidebar.write(f"**EPS Estimat:** {est_eps_current} USD")
-                        if est_rev_current:
-                            st.sidebar.write(f"**Venituri Estimate:** {est_rev_current:,.0f} USD")
-                    else:
-                        st.sidebar.warning("Nu s-au găsit estimări pe FMP pentru acest ticker.")
-                
                 elif response.status_code == 403:
-                    st.sidebar.warning("FMP limitează contul gratuit. Folosim Yahoo Finance ca rezervă.")
-                    forward_eps = info.get('forwardEps')
-                    if forward_eps and eps_ttm and eps_ttm > 0:
-                        implied_1y_eps_growth = ((forward_eps / eps_ttm) - 1) * 100
-                        st.sidebar.write(f"**Creștere EPS (YF):** {implied_1y_eps_growth:.2f}%")
-                    else:
-                        st.sidebar.write("**Creștere EPS:** Indisponibil")
-                else:
-                    st.sidebar.error(f"Eroare tehnică FMP API ({response.status_code}).")
-                    
-            except Exception as e:
-                st.sidebar.error("Eroare la conexiunea cu FMP.")
+                    st.sidebar.warning("Cont FMP Gratuit: Acces limitat la estimări.")
+            except:
+                st.sidebar.error("Eroare conexiune FMP.")
         else:
-            st.sidebar.error("⚠️ Cheia API lipsește din setările Streamlit Secrets.")
+            st.sidebar.error("⚠️ Cheia API lipsește din Secrets.")
 
         st.sidebar.markdown("---")
 
@@ -88,217 +73,64 @@ if ticker_symbol:
             tnx = 0.04
         market_return = 0.10 
         cost_of_equity = tnx + beta * (market_return - tnx)
-        
-        default_wacc = round(cost_of_equity * 100, 2)
-        if default_wacc <= 0 or pd.isna(default_wacc): default_wacc = 8.5
-        
-        st.sidebar.subheader("Ajustări DCF")
-        wacc = st.sidebar.number_input("WACC (%)", value=float(default_wacc), step=0.1) / 100
-        terminal_growth = st.sidebar.number_input("Terminal Growth Rate (%)", value=2.5, step=0.1) / 100
+        wacc = st.sidebar.number_input("WACC (%)", value=float(round(cost_of_equity * 100, 2)), step=0.1) / 100
+        terminal_growth = st.sidebar.number_input("Terminal Growth (%)", value=2.5, step=0.1) / 100
         
         st.sidebar.subheader("Ajustări Peter Lynch")
-        lynch_period = st.sidebar.radio("Baza de calcul pentru creștere", ["Anual (FY Y/Y)", "Trimestrial (Q/Q YoY)"])
+        lynch_period = st.sidebar.radio("Baza creștere", ["Anual (FY Y/Y)", "Trimestrial (Q/Q YoY)"])
 
-        st.sidebar.subheader("Ajustări Evaluare Relativă")
+        # Evaluare Relativa
         fetched_pe = 15.0
-        etf_used = "Default"
-        
         if company_sector in SECTOR_ETFS:
-            etf_ticker = SECTOR_ETFS[company_sector]
             try:
-                etf_info = yf.Ticker(etf_ticker).info
-                if 'trailingPE' in etf_info and etf_info['trailingPE'] is not None:
-                    fetched_pe = round(etf_info['trailingPE'], 2)
-                    etf_used = etf_ticker
-            except:
-                pass
-                
-        st.sidebar.write(f"Sector identificat: **{company_sector}**")
-        if etf_used != "Default":
-            st.sidebar.caption(f"P/E extras automat din ETF-ul: {etf_used}")
-        else:
-            st.sidebar.caption("Nu s-a putut extrage ETF-ul. Se folosește o medie generală.")
-            
+                etf_info = yf.Ticker(SECTOR_ETFS[company_sector]).info
+                fetched_pe = etf_info.get('trailingPE', 15.0)
+            except: pass
         sector_pe = st.sidebar.number_input("P/E Mediu Sector", value=float(fetched_pe), step=0.5)
 
-        st.sidebar.subheader("Ajustări PEG")
-        raw_growth = info.get('earningsGrowth')
-        est_growth = (raw_growth * 100) if raw_growth is not None else 10.0
-        forward_growth = st.sidebar.number_input("Rata de creștere estimată (%)", value=float(est_growth), step=1.0)
+        # PEG
+        est_growth = (info.get('earningsGrowth', 0.1) * 100)
+        forward_growth = st.sidebar.number_input("Creștere estimată (%)", value=float(est_growth), step=1.0)
 
-        # --- CALCUL METODE ---
-        st.header(f"Rezultate pentru {info.get('shortName', ticker_symbol)} ({ticker_symbol})")
-        st.write(f"**Preț Curent:** {current_price} USD | **EPS (TTM / FY):** {eps_ttm} USD")
+        # --- REZULTATE ---
+        st.header(f"Rezultate pentru {info.get('shortName', ticker_symbol)}")
+        st.write(f"**Preț Curent:** {current_price} USD | **EPS:** {eps_ttm} USD")
         
-        # --- RÂNDUL 1 ---
-        r1_col1, r1_col2 = st.columns(2)
+        col1, col2 = st.columns(2)
         
-        # 1. DISCOUNTED CASH FLOW (DCF)
-        with r1_col1:
-            st.subheader("1. Discounted Cashflow (DCF)")
+        # 1. DCF
+        with col1:
+            st.subheader("1. DCF")
             try:
-                cashflow = ticker.cashflow
-                if 'Free Cash Flow' in cashflow.index:
-                    fcf_current = cashflow.loc['Free Cash Flow'].dropna().iloc[0]
-                else:
-                    ocf = cashflow.loc['Operating Cash Flow'].dropna().iloc[0]
-                    capex = cashflow.loc['Capital Expenditure'].dropna().iloc[0]
-                    fcf_current = ocf + capex 
-                
-                shares_out = info.get('sharesOutstanding', 1)
-                fcf_per_share = fcf_current / shares_out
-                
-                fcf_projected = [fcf_per_share * (1 + forward_growth/100)**i for i in range(1, 6)]
-                pv_fcf = sum([fcf / ((1 + wacc)**i) for i, fcf in enumerate(fcf_projected, 1)])
-                
-                terminal_value = (fcf_projected[-1] * (1 + terminal_growth)) / (wacc - terminal_growth)
-                pv_tv = terminal_value / ((1 + wacc)**5)
-                
-                dcf_fair_value = pv_fcf + pv_tv
-                st.metric("Fair Value (DCF)", f"{max(0, dcf_fair_value):.2f} USD")
-                st.caption(f"Calculat cu WACC: {wacc*100:.2f}%, FCF initial/actiune: {fcf_per_share:.2f} USD")
-            except Exception as e:
-                st.error("Date insuficiente pentru calculul DCF din YFinance.")
-                dcf_fair_value = 0
-                
-        # 2. METODA PETER LYNCH 
-        with r1_col2:
-            st.subheader("2. Metoda Peter Lynch")
-            try:
-                if lynch_period == "Anual (FY Y/Y)":
-                    stmt = ticker.income_stmt
-                    eps_rows = [r for r in stmt.index if 'EPS' in str(r) and 'Diluted' in str(r)]
-                    if not eps_rows: eps_rows = [r for r in stmt.index if 'EPS' in str(r)]
-                    
-                    eps_data = stmt.loc[eps_rows[0]].dropna() if eps_rows else []
-                    if len(eps_data) >= 2:
-                        eps_now = eps_data.iloc[0]
-                        eps_prev = eps_data.iloc[1]
-                    else:
-                        eps_now, eps_prev = None, None
-                else:
-                    stmt = ticker.quarterly_income_stmt
-                    eps_rows = [r for r in stmt.index if 'EPS' in str(r) and 'Diluted' in str(r)]
-                    if not eps_rows: eps_rows = [r for r in stmt.index if 'EPS' in str(r)]
-                    
-                    eps_data = stmt.loc[eps_rows[0]].dropna() if eps_rows else []
-                    if len(eps_data) >= 5:
-                        eps_now = eps_data.iloc[0] 
-                        eps_prev = eps_data.iloc[4] 
-                    else:
-                        eps_now, eps_prev = None, None
-                
-                if eps_now is None or eps_prev is None:
-                    st.warning(f"Yahoo Finance nu a raportat suficiente trimestre consecutive pentru {lynch_period}.")
-                    lynch_fair_value = 0
-                elif eps_prev <= 0:
-                    st.warning("EPS-ul anterior a fost zero sau negativ. Nu se poate calcula matematic procentul.")
-                    lynch_fair_value = 0
-                else:
-                    growth_ratio = (eps_now / eps_prev)
-                    growth_percentage = (growth_ratio - 1) * 100
-                    
-                    lynch_fair_value = eps_ttm * growth_percentage
-                    
-                    st.metric("Fair Value (Lynch)", f"{max(0, lynch_fair_value):.2f} USD")
-                    st.caption(f"Calcul: EPS Curent ({eps_ttm}) * Creșterea {lynch_period} ({growth_percentage:.2f}%)")
-                
-                # --- AXA VIZUALĂ P/E LYNCH ---
-                if eps_ttm > 0:
-                    current_pe = current_price / eps_ttm
-                    
-                    if current_pe <= 15:
-                        interpretare = "Subevaluat"
-                        culoare = "#4CAF50" 
-                    elif current_pe < 20:
-                        interpretare = "Ușor subevaluat"
-                        culoare = "#8BC34A" 
-                    elif current_pe == 20:
-                        interpretare = "Fair value"
-                        culoare = "#FFC107" 
-                    elif current_pe < 25:
-                        interpretare = "Ușor supraevaluat"
-                        culoare = "#FF9800" 
-                    else:
-                        interpretare = "Supraevaluat"
-                        culoare = "#F44336" 
-                        
-                    if current_pe <= 15:
-                        pos = (current_pe / 15) * 30
-                    elif current_pe <= 20:
-                        pos = 30 + ((current_pe - 15) / 5) * 20
-                    elif current_pe <= 25:
-                        pos = 50 + ((current_pe - 20) / 5) * 20
-                    else:
-                        pos = 70 + min(((current_pe - 25) / 15) * 30, 30) 
-                    
-                    html_content = f"""<div style="margin-top: 15px; margin-bottom: 30px; padding: 15px; background-color: rgba(128,128,128,0.1); border-radius: 8px;">
-    <div style="font-size: 14px; margin-bottom: 15px;">📊 <b>P/E Curent: {current_pe:.1f}</b> (<span style="color: {culoare}; font-weight: bold;">{interpretare}</span>)</div>
-    <div style="position: relative; width: 100%; height: 12px; background: linear-gradient(to right, #4CAF50 30%, #8BC34A 30% 50%, #FFC107 50% 70%, #F44336 70%); border-radius: 6px;">
-        <div style="position: absolute; left: 30%; top: -4px; bottom: -4px; width: 2px; background-color: white; opacity: 0.7;"></div>
-        <div style="position: absolute; left: 50%; top: -4px; bottom: -4px; width: 2px; background-color: white; opacity: 0.7;"></div>
-        <div style="position: absolute; left: 70%; top: -4px; bottom: -4px; width: 2px; background-color: white; opacity: 0.7;"></div>
-        <div style="position: absolute; left: {pos}%; top: -6px; width: 4px; height: 24px; background-color: white; border: 2px solid #333; transform: translateX(-50%); border-radius: 2px;"></div>
-    </div>
-    <div style="position: relative; width: 100%; height: 15px; margin-top: 8px; font-size: 12px; font-weight: bold; color: gray;">
-        <span style="position: absolute; left: 30%; transform: translateX(-50%);">15</span>
-        <span style="position: absolute; left: 50%; transform: translateX(-50%);">20</span>
-        <span style="position: absolute; left: 70%; transform: translateX(-50%);">25+</span>
-    </div>
-</div>"""
-                    st.markdown(html_content, unsafe_allow_html=True)
-                elif eps_ttm < 0:
-                    st.warning("Nu se poate desena axa deoarece compania are câștiguri negative (EPS < 0).")
-                    
-            except Exception as e:
-                st.error("Date insuficiente în rapoartele financiare.")
-                lynch_fair_value = 0
+                cf = ticker.cashflow
+                fcf = cf.loc['Free Cash Flow'].iloc[0] if 'Free Cash Flow' in cf.index else 0
+                fcf_share = fcf / info.get('sharesOutstanding', 1)
+                dcf_val = (fcf_share * (1 + forward_growth/100)) / (wacc - terminal_growth/100)
+                st.metric("Fair Value (DCF)", f"{max(0, dcf_val):.2f} USD")
+            except:
+                st.write("Date DCF indisponibile.")
+                dcf_val = 0
 
-        # --- RÂNDUL 2 ---
-        r2_col1, r2_col2 = st.columns(2)
+        # 2. Lynch
+        with col2:
+            st.subheader("2. Peter Lynch")
+            growth = forward_growth # simplificat pentru diagnostic
+            lynch_val = eps_ttm * growth
+            st.metric("Fair Value (Lynch)", f"{max(0, lynch_val):.2f} USD")
 
-        # 3. EVALUARE RELATIVĂ
-        with r2_col1:
-            st.subheader("3. Evaluare Relativă")
-            relative_fair_value = eps_ttm * sector_pe
-            st.metric("Fair Value (Relativ)", f"{max(0, relative_fair_value):.2f} USD")
-            st.caption(f"Calculat ca: EPS ({eps_ttm}) * P/E Sector ({sector_pe})")
+        col3, col4 = st.columns(2)
+        # 3. Relativ
+        with col3:
+            st.subheader("3. Relativ")
+            rel_val = eps_ttm * sector_pe
+            st.metric("Fair Value (Relativ)", f"{max(0, rel_val):.2f} USD")
+        # 4. PEG
+        with col4:
+            st.subheader("4. PEG")
+            peg_val = eps_ttm * forward_growth
+            st.metric("Fair Value (PEG)", f"{max(0, peg_val):.2f} USD")
 
-        # 4. METODA PEG
-        with r2_col2:
-            st.subheader("4. Metoda PEG")
-            peg_ratio = info.get('pegRatio')
-            
-            peg_fair_value = eps_ttm * forward_growth
-            
-            st.metric("Fair Value (PEG = 1)", f"{max(0, peg_fair_value):.2f} USD")
-            
-            if eps_ttm <= 0:
-                st.warning("Compania are EPS negativ sau 0.")
-            elif forward_growth <= 0:
-                st.warning("Rata de creștere este 0 sau negativă.")
-            elif peg_ratio:
-                st.caption(f"PEG actual raportat: {peg_ratio}. Fair Value asumat pentru un PEG de 1.0")
-            else:
-                st.caption("Calculat asertiv pentru un PEG perfect de 1.0.")
-
-        # --- SUMAR SI CONCLUZIE ---
-        st.markdown("---")
-        st.subheader("💡 Sumar Evaluare")
-        
-        valid_evals = [v for v in [dcf_fair_value, lynch_fair_value, relative_fair_value, peg_fair_value] if v > 0]
-        if valid_evals:
-            mediana = np.median(valid_evals)
-            delta = mediana - current_price
-            
-            st.metric("Fair Value Median (Consensul metodelor valide)", 
-                      f"{mediana:.2f} USD", 
-                      f"{delta:.2f} USD vs Preț Curent",
-                      delta_color="normal" if delta > 0 else "inverse")
-            
-            st.info("Această evaluare folosește strict date financiare raportate și regulile matematice agreate, fără a adăuga speculații de piață.")
-            
     except Exception as e:
-        st.error(f"Eroare tehnică la preluarea datelor: {e}")
-        with st.expander("Apasă aici pentru detaliile erorii (Traceback)"):
+        st.error(f"❌ Eroare tehnică detectată: {e}")
+        with st.expander("Vezi detalii pentru depanare"):
             st.code(traceback.format_exc())
