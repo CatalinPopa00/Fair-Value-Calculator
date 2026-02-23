@@ -3,6 +3,7 @@ import yfinance as yf
 import pandas as pd
 import numpy as np
 import requests
+import traceback
 
 # Setari pagina
 st.set_page_config(page_title="Fair Value Calculator", layout="wide")
@@ -18,7 +19,6 @@ SECTOR_ETFS = {
 
 # Incarcare API Key din Streamlit Secrets in mod sigur
 try:
-    # Eliminam posibilele spatii adaugate din greseala la copy-paste
     api_key = st.secrets["FMP_API_KEY"].strip()
 except:
     api_key = None
@@ -32,6 +32,10 @@ if ticker_symbol:
         ticker = yf.Ticker(ticker_symbol)
         info = ticker.info
         
+        # Validare rapida: Daca Yahoo blocheaza, info vine gol
+        if not info or len(info) <= 2:
+             raise ValueError("Yahoo Finance a refuzat conexiunea (Rate Limit). Info este gol.")
+             
         current_price = info.get('currentPrice', info.get('regularMarketPrice', 0))
         eps_ttm = info.get('trailingEps', 0) 
         beta = info.get('beta', 1.0)
@@ -59,20 +63,19 @@ if ticker_symbol:
                     else:
                         st.sidebar.warning("Nu s-au găsit estimări pe FMP pentru acest ticker.")
                 
-                # FMP returneaza 403 daca ai plan gratuit si endpoint-ul cere plan platit
                 elif response.status_code == 403:
-                    st.sidebar.warning("FMP limitează acest cont la planul gratuit. Se folosesc datele Yahoo Finance ca rezervă.")
+                    st.sidebar.warning("FMP limitează contul gratuit. Folosim Yahoo Finance ca rezervă.")
                     forward_eps = info.get('forwardEps')
                     if forward_eps and eps_ttm and eps_ttm > 0:
                         implied_1y_eps_growth = ((forward_eps / eps_ttm) - 1) * 100
-                        st.sidebar.write(f"**Creștere EPS (Estimare YF):** {implied_1y_eps_growth:.2f}%")
+                        st.sidebar.write(f"**Creștere EPS (YF):** {implied_1y_eps_growth:.2f}%")
                     else:
                         st.sidebar.write("**Creștere EPS:** Indisponibil")
                 else:
-                    st.sidebar.error(f"Eroare tehnică FMP API ({response.status_code}). Se folosește rezerva Yahoo Finance.")
+                    st.sidebar.error(f"Eroare tehnică FMP API ({response.status_code}).")
                     
             except Exception as e:
-                st.sidebar.error("Eroare la conexiunea cu internetul/FMP.")
+                st.sidebar.error("Eroare la conexiunea cu FMP.")
         else:
             st.sidebar.error("⚠️ Cheia API lipsește din setările Streamlit Secrets.")
 
@@ -296,4 +299,6 @@ if ticker_symbol:
             st.info("Această evaluare folosește strict date financiare raportate și regulile matematice agreate, fără a adăuga speculații de piață.")
             
     except Exception as e:
-        st.error("Eroare la preluarea datelor. Verifică dacă ticker-ul este corect.")
+        st.error(f"Eroare tehnică la preluarea datelor: {e}")
+        with st.expander("Apasă aici pentru detaliile erorii (Traceback)"):
+            st.code(traceback.format_exc())
